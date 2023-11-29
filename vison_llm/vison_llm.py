@@ -6,6 +6,25 @@ import time
 from openai import OpenAI
 from collections import deque
 from datetime import datetime
+from pydub import AudioSegment
+from pydub.playback import play
+
+
+def text_to_speech(text, client):
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="alloy",
+        input=text
+    )
+
+    # 音声データをファイルに保存
+    response.stream_to_file("output.mp3")
+
+    # MP3ファイルを読み込む
+    sound = AudioSegment.from_mp3("output.mp3")
+    # 音声を再生
+    play(sound)
+
 
 def encode_image_to_base64(frame):
     _, buffer = cv2.imencode(".jpg", frame)
@@ -55,14 +74,14 @@ def save_frame(frame, filename, directory='./frames'):
     # フレームを保存
     cv2.imwrite(filepath, frame)
 
-def send_frame_to_gpt(frame, previous_texts, client):
+def send_frame_to_gpt(frame, previous_texts, timestamp, client):
     # 前5フレームのテキストとタイムスタンプを結合してコンテキストを作成
     context = ' '.join(previous_texts)
   
     # フレームをGPTに送信するためのメッセージペイロードを準備
     # コンテキストから前回の予測が現在の状況と一致しているかを評価し、
     # 次の予測をするように指示
-    prompt_message = f"Context: {context}. Assess if the previous prediction matches the current situation. Current: explain the current situation in 10 words or less. Next: Predict the next situation in 10 words or less."
+    prompt_message = f"Context: {context}. Now:{timestamp}, Assess if the previous prediction matches the current situation. Current: explain the current situation in 10 words or less. Next: Predict the next situation in 10 words or less."
 
     PROMPT_MESSAGES = {
         "role": "user",
@@ -76,7 +95,7 @@ def send_frame_to_gpt(frame, previous_texts, client):
     params = {
         "model": "gpt-4-vision-preview",
         "messages": [PROMPT_MESSAGES],
-        "max_tokens": 500,
+        "max_tokens": 300,
     }
 
     # API呼び出し
@@ -84,18 +103,31 @@ def send_frame_to_gpt(frame, previous_texts, client):
     return result.choices[0].message.content
 
 def main():
-    # OpenAIクライアントの初期化
+    """メイン関数 - カメラからの映像を処理する"""
     client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
 
-    # PCのインナーカメラを開く
-    video = cv2.VideoCapture(0)
+    try:
+        video = cv2.VideoCapture(0)
+        if not video.isOpened():
+            raise IOError("カメラを開くことができませんでした。")
+    except IOError as e:
+        print(f"エラーが発生しました: {e}")
+        return
 
-    # 最近の5フレームのテキストを保持するためのキュー
+    # 最近の10フレームのテキストを保持するためのキュー
     previous_texts = deque(maxlen=10)
 
-    while video.isOpened():
+    # プログラム開始時の時間を記録
+    start_time = time.time()
+
+    while True:
+        # 経過時間をチェック
+        if time.time() - start_time > 30:  # 30秒経過した場合
+            break
+
         success, frame = video.read()
         if not success:
+            print("フレームの読み込みに失敗しました。")
             break
 
         # フレームをBase64でエンコード
@@ -105,7 +137,7 @@ def main():
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # GPTにフレームを送信し、生成されたテキストを取得
-        generated_text = send_frame_to_gpt(base64_image, previous_texts, client)
+        generated_text = send_frame_to_gpt(base64_image, previous_texts, timestamp, client)
         print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
 
         # タイムスタンプ付きのテキストをキューに追加
@@ -122,11 +154,14 @@ def main():
         filename = f"{timestamp}.jpg"
         save_frame(frame, filename)
 
+        text_to_speech(generated_text, client)
+
         # 1秒待機
         time.sleep(1)
 
     # ビデオをリリースする
     video.release()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
