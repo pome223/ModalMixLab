@@ -8,7 +8,11 @@ from collections import deque
 from datetime import datetime
 from pydub import AudioSegment
 from pydub.playback import play
+import threading
 
+def play_audio_async(file_path):
+    sound = AudioSegment.from_mp3(file_path)
+    play(sound)
 
 def text_to_speech(text, client):
     response = client.audio.speech.create(
@@ -16,14 +20,23 @@ def text_to_speech(text, client):
         voice="alloy",
         input=text
     )
-
-    # 音声データをファイルに保存
     response.stream_to_file("output.mp3")
+    threading.Thread(target=play_audio_async, args=("output.mp3",)).start()
 
-    # MP3ファイルを読み込む
-    sound = AudioSegment.from_mp3("output.mp3")
-    # 音声を再生
-    play(sound)
+# def text_to_speech(text, client):
+#     response = client.audio.speech.create(
+#         model="tts-1",
+#         voice="alloy",
+#         input=text
+#     )
+
+#     # 音声データをファイルに保存
+#     response.stream_to_file("output.mp3")
+
+#     # MP3ファイルを読み込む
+#     sound = AudioSegment.from_mp3("output.mp3")
+#     # 音声を再生
+#     play(sound)
 
 
 def encode_image_to_base64(frame):
@@ -122,7 +135,7 @@ def main():
 
     while True:
         # 経過時間をチェック
-        if time.time() - start_time > 30:  # 30秒経過した場合
+        if time.time() - start_time > 60:  # 30秒経過した場合
             break
 
         success, frame = video.read()
@@ -157,7 +170,7 @@ def main():
         text_to_speech(generated_text, client)
 
         # 1秒待機
-        time.sleep(1)
+        # time.sleep(1)
 
     # ビデオをリリースする
     video.release()
