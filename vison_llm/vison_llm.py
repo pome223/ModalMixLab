@@ -60,22 +60,29 @@ def wrap_text(text, line_length):
     return lines
 
 def add_text_to_frame(frame, text):
-    # テキストを100文字ごとに改行
-    wrapped_text = wrap_text(text, 100)
+    # テキストを70文字ごとに改行
+    wrapped_text = wrap_text(text, 70)
 
     # フレームの高さと幅を取得
     height, width = frame.shape[:2]
 
     # テキストのフォントとサイズ
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5
+    font_scale = 1.0  # フォントサイズを大きくする
     color = (255, 255, 255)  # 白色
-    thickness = 1
+    outline_color = (0, 0, 0)  # 輪郭の色（黒）
+    thickness = 2
+    outline_thickness = 4  # 輪郭の太さ
     line_type = cv2.LINE_AA
 
     # 各行のテキストを画像に追加
     for i, line in enumerate(wrapped_text):
-        position = (10, 30 + i * 15)  # 各行の位置を調整
+        position = (10, 30 + i * 30)  # 各行の位置を調整（より大きい間隔）
+
+        # テキストの輪郭を描画
+        cv2.putText(frame, line, position, font, font_scale, outline_color, outline_thickness, line_type)
+
+        # テキストを描画
         cv2.putText(frame, line, position, font, font_scale, color, thickness, line_type)
 
 def save_frame(frame, filename, directory='./frames'):
@@ -94,7 +101,7 @@ def send_frame_to_gpt(frame, previous_texts, timestamp, client):
     # フレームをGPTに送信するためのメッセージペイロードを準備
     # コンテキストから前回の予測が現在の状況と一致しているかを評価し、
     # 次の予測をするように指示
-    prompt_message = f"Context: {context}. Now:{timestamp}, Assess if the previous prediction matches the current situation. Current: explain the current situation in 10 words or less. Next: Predict the next situation in 10 words or less."
+    prompt_message = f"Context: {context}. Now:{timestamp}, Assess if the previous prediction matches the current situation. Current: explain the current  situation in 10 words or less. Next: Predict the next  situation in 10 words or less. Only output Current and Next"
 
     PROMPT_MESSAGES = {
         "role": "user",
@@ -135,7 +142,7 @@ def main():
 
     while True:
         # 経過時間をチェック
-        if time.time() - start_time > 60:  # 30秒経過した場合
+        if time.time() - start_time > 300:  # 30秒経過した場合
             break
 
         success, frame = video.read()
@@ -170,7 +177,7 @@ def main():
         text_to_speech(generated_text, client)
 
         # 1秒待機
-        # time.sleep(1)
+        time.sleep(1)
 
     # ビデオをリリースする
     video.release()
