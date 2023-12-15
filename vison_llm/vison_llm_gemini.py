@@ -10,6 +10,7 @@ from pydub import AudioSegment
 from pydub.playback import play
 import threading
 import google.generativeai as genai
+from google.cloud import texttospeech
 import io
 import PIL.Image
 
@@ -18,14 +19,14 @@ def play_audio_async(file_path):
     sound = AudioSegment.from_mp3(file_path)
     play(sound)
 
-def text_to_speech(text, client):
-    response = client.audio.speech.create(
-        model="tts-1",
-        voice="alloy",
-        input=text
-    )
-    response.stream_to_file("output.mp3")
-    threading.Thread(target=play_audio_async, args=("output.mp3",)).start()
+# def text_to_speech(text, client):
+#     response = client.audio.speech.create(
+#         model="tts-1",
+#         voice="alloy",
+#         input=text
+#     )
+#     response.stream_to_file("output.mp3")
+#     threading.Thread(target=play_audio_async, args=("output.mp3",)).start()
 
 # def text_to_speech(text, client):
 #     response = client.audio.speech.create(
@@ -41,11 +42,28 @@ def text_to_speech(text, client):
 #     sound = AudioSegment.from_mp3("output.mp3")
 #     # 音声を再生
 #     play(sound)
+def text_to_speech_google(text, client):
+    # 音声合成リクエストの設定
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="ja-JP",  # 日本語を指定
+        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
 
+    # 音声合成リクエストを送信
+    response = client.synthesize_speech(input=synthesis_input, voice=voice, audio_config=audio_config)
 
-def encode_image_to_base64(frame):
-    _, buffer = cv2.imencode(".jpg", frame)
-    return base64.b64encode(buffer).decode('utf-8')
+    # 音声データをファイルに保存
+    with open("output.mp3", "wb") as out:
+        out.write(response.audio_content)
+
+    # MP3ファイルを読み込む
+    sound = AudioSegment.from_mp3("output.mp3")
+    # 音声を再生
+    play(sound)
 
 def wrap_text(text, line_length):
     """テキストを指定された長さで改行する"""
@@ -108,52 +126,11 @@ def save_temp_frame(frame, filename, directory='./temp'):
     cv2.imwrite(filepath, frame)
     return filepath  # 保存したファイルのパスを返す
 
-def send_frame_to_gpt(frame, previous_texts, timestamp, client):
-    # 前5フレームのテキストとタイムスタンプを結合してコンテキストを作成
-    context = ' '.join(previous_texts)
-  
-    # フレームをGPTに送信するためのメッセージペイロードを準備
-    # コンテキストから前回の予測が現在の状況と一致しているかを評価し、
-    # 次の予測をするように指示
-    prompt_message = f"Context: {context}. Now:{timestamp}, Assess if the previous prediction matches the current situation. Current: explain the current  situation in 10 words or less. Next: Predict the next  situation in 10 words or less. Only output Current and Next"
-
-    PROMPT_MESSAGES = {
-        "role": "user",
-        "content": [
-            prompt_message,
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame}"}}
-        ],
-    }
-
-    # API呼び出しパラメータ
-    params = {
-        "model": "gpt-4-vision-preview",
-        "messages": [PROMPT_MESSAGES],
-        "max_tokens": 300,
-    }
-
-    # API呼び出し
-    result = client.chat.completions.create(**params)
-    return result.choices[0].message.content
-
-def convert_cv2_frame_to_pil_image(frame):
-    # OpenCVのBGR形式からRGB形式に変換
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    # PIL.Image形式に変換
-    pil_image = PIL.Image.fromarray(rgb_frame)
-    return pil_image  
 
 def send_frame_with_text_to_gemini(frame, previous_texts, timestamp,user_input,client):
-    # フレームをPIL画像に変換
-    # pil_image = Image.open(io.BytesIO(frame))
-        # フレームをPIL画像に変換
-    # コマンドラインからの入力をチェック
     
     temp_file_path = save_temp_frame(frame, "temp.jpg")
     img = PIL.Image.open(temp_file_path)
-
-    # pil_image = convert_cv2_frame_to_pil_image(img)
-    # pil_image = cv2pil(frame)
 
     message = "Assess if the previous prediction matches the current situation. Current: explain the current  situation in 30 words or less. Next: Predict the next  situation in 30 words or less. Only output Current and Next."
     if user_input:
@@ -166,7 +143,8 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp,user_input,c
     model = client.GenerativeModel('gemini-pro-vision')
 
     # モデルに画像とテキストの指示を送信
-    prompt = f"Context: {context}. Now:{timestamp}, Prompt:{message}, reply in Japanese"
+    # prompt = f"Context: {context}. Now:{timestamp}, Prompt:{message}, reply in Japanese"
+    prompt = f"Given the context: {context} and the current time: {timestamp}, please respond to the following message in Japanese without repeating the context. Message: {message}"
     response = model.generate_content([prompt, img], stream=True)
     response.resolve()
 
@@ -174,9 +152,14 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp,user_input,c
     return response.text
 
 def main():
-    # """メイン関数 - カメラからの映像を処理する"""
-    # client = OpenAI(api_key=os.environ['OPENAI_API_KEY'])
     
+    # GOOGLE_API_KEY=userdata.get('GOOGLE_API_KEY')
+    genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
+
+    # Google Cloud TTS APIのクライアントを初期化
+    # gcloud auth application-default login                                                                                                             
+    client = texttospeech.TextToSpeechClient()
+
     try:
         video = cv2.VideoCapture(0)
         if not video.isOpened():
@@ -184,11 +167,9 @@ def main():
     except IOError as e:
         print(f"エラーが発生しました: {e}")
         return
-    # GOOGLE_API_KEY=userdata.get('GOOGLE_API_KEY')
-    genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
 
     # 最近の10フレームのテキストを保持するためのキュー
-    previous_texts = deque(maxlen=10)
+    previous_texts = deque(maxlen=5)
 
     # プログラム開始時の時間を記録
     start_time = time.time()
@@ -210,16 +191,12 @@ def main():
         # 現在のタイムスタンプを取得
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        # GPTにフレームを送信し、生成されたテキストを取得
+        # geminiにフレームを送信し、生成されたテキストを取得
         generated_text = send_frame_with_text_to_gemini(frame, previous_texts,timestamp,user_input, genai)
-
         print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
 
         # タイムスタンプ付きのテキストをキューに追加
         previous_texts.append(f"[{timestamp}] {generated_text}")
-
-        # フレームを保存
-        # save_frame(frame, f"{timestamp} {generated_text}.jpg")
 
         # フレームにテキストを追加
         text_to_add = f"{timestamp}: {generated_text}"  # 画面に収まるようにテキストを制限
@@ -230,6 +207,8 @@ def main():
         save_frame(frame, filename)
 
         # text_to_speech(generated_text, client)
+        text_to_speech_google(generated_text, client)
+
 
         # 1秒待機
         time.sleep(2)
