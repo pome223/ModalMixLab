@@ -1,17 +1,12 @@
 import cv2
 import os
-import requests
-import time
 from collections import deque
 from datetime import datetime
 from pydub import AudioSegment
 from pydub.playback import play
-import threading
 import google.generativeai as genai
 from google.cloud import texttospeech
-import io
 import PIL.Image
-
 
 def text_to_speech_google(text, client):
     # 音声合成リクエストの設定
@@ -97,8 +92,7 @@ def save_temp_frame(frame, filename, directory='./temp'):
     cv2.imwrite(filepath, frame)
     return filepath  # 保存したファイルのパスを返す
 
-
-def send_frame_with_text_to_gemini(frame, previous_texts, timestamp,user_input,client):
+def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, client):
     
     temp_file_path = save_temp_frame(frame, "temp.jpg")
     img = PIL.Image.open(temp_file_path)
@@ -125,7 +119,6 @@ def main():
     
     genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
     # Google Cloud TTS APIのクライアントを初期化
-    # gcloud auth application-default login                                                                                                             
     client = texttospeech.TextToSpeechClient()
 
     try:
@@ -136,11 +129,11 @@ def main():
         print(f"エラーが発生しました: {e}")
         return
 
-    # 最近の10フレームのテキストを保持するためのキュー
+    # 最近の5フレームのテキストを保持するためのキュー
     previous_texts = deque(maxlen=5)
 
     while True:
-
+        
         print("新しいプロンプトを入力するか、Enterキーを押して続行してください (プログラムを終了するには 'exit' と入力）:")
         user_input = input().strip()  # 入力を受け取る
 
@@ -153,14 +146,14 @@ def main():
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         # geminiにフレームを送信し、生成されたテキストを取得
-        generated_text = send_frame_with_text_to_gemini(frame, previous_texts,timestamp,user_input, genai)
+        generated_text = send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, genai)
         print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
 
         # タイムスタンプ付きのテキストをキューに追加
         previous_texts.append(f"[{timestamp}] {generated_text}")
 
-        # フレームにテキストを追加
-        text_to_add = f"{timestamp}: {generated_text}"  # 画面に収まるようにテキストを制限
+        # フレームにテキストを追加(日本語は文字化けします)
+        text_to_add = f"{timestamp}: {generated_text}" 
 
         add_text_to_frame(frame, text_to_add)
 
@@ -170,7 +163,6 @@ def main():
 
         # text_to_speech(generated_text, client)
         text_to_speech_google(generated_text, client)
-
 
     # ビデオをリリースする
     video.release()
