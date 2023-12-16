@@ -97,10 +97,6 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input,
     temp_file_path = save_temp_frame(frame, "temp.jpg")
     img = PIL.Image.open(temp_file_path)
 
-    message = "Tell me what you see."
-    if user_input:
-        message = user_input
-
     # 過去のテキストをコンテキストとして結合
     context = ' '.join(previous_texts)
 
@@ -108,7 +104,7 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input,
     model = client.GenerativeModel('gemini-pro-vision')
 
     # モデルに画像とテキストの指示を送信
-    prompt = f"Given the context: {context} and the current time: {timestamp}, please respond to the following message in Japanese without repeating the context. Message: {message}"
+    prompt = f"Given the context: {context} and the current time: {timestamp}, please respond to the following message in Japanese without repeating the context. Message: {user_input}"
     response = model.generate_content([prompt, img], stream=True)
     response.resolve()
 
@@ -137,6 +133,9 @@ def main():
         print("新しいプロンプトを入力するか、Enterキーを押して続行してください (プログラムを終了するには 'exit' と入力）:")
         user_input = input().strip()  # 入力を受け取る
 
+        if not user_input:
+            user_input = "Tell me what you see."
+
         success, frame = video.read()
         if not success:
             print("フレームの読み込みに失敗しました。")
@@ -150,7 +149,8 @@ def main():
         print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
 
         # タイムスタンプ付きのテキストをキューに追加
-        previous_texts.append(f"[{timestamp}] {generated_text}")
+        # previous_texts.append(f"[{timestamp}] {generated_text}")
+        previous_texts.append(f"[{timestamp}] Message: {user_input}, Generated Text: {generated_text}")
 
         # フレームにテキストを追加(日本語は文字化けします)
         text_to_add = f"{timestamp}: {generated_text}" 
