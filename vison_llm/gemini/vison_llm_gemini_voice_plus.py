@@ -1,18 +1,45 @@
-import cv2
+import pvporcupine
+from google.cloud import speech, texttospeech
+import pyaudio
+import struct
 import os
+import cv2
 from collections import deque
 from datetime import datetime
 from pydub import AudioSegment
 from pydub.playback import play
-import google.generativeai as genai
-from google.cloud import texttospeech
 import PIL.Image
+import google.generativeai as genai
+
+
+def record_audio(stream, rate, frame_length, record_seconds):
+    """指定された秒数だけ音声を録音する関数。"""
+    print("Recording...")
+    frames = []
+    for _ in range(0, int(rate / frame_length * record_seconds)):
+        data = stream.read(frame_length)
+        frames.append(data)
+    print("Recording stopped.")
+    return b''.join(frames)
+
+def transcribe_audio(client, audio_data):
+    """Google Speech-to-Textを使用して音声をテキストに変換する関数。"""
+    audio = speech.RecognitionAudio(content=audio_data)
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code="en-US",
+    )
+    response = client.recognize(config=config, audio=audio)
+    for result in response.results:
+        print("Transcribed text: {}".format(result.alternatives[0].transcript))
+    return result.alternatives[0].transcript
 
 def text_to_speech_google(text, client):
     # 音声合成リクエストの設定
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
-        language_code="ja-JP",  # 日本語を指定
+        language_code="en-US",  # 日本語を指定
         ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
     )
     audio_config = texttospeech.AudioConfig(
@@ -104,7 +131,7 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input,
     model = client.GenerativeModel('gemini-pro-vision')
 
     # モデルに画像とテキストの指示を送信
-    prompt = f"Given the context: {context} and the current time: {timestamp}, please respond to the following message in Japanese without repeating the context. Message: {user_input}"
+    prompt = f"Given the context: {context} and the current time: {timestamp}, please respond to the following message without repeating the context. Message: {user_input}"
     response = model.generate_content([prompt, img], stream=True)
     response.resolve()
 
@@ -112,61 +139,80 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input,
     return response.text
 
 def main():
-    
+    # 環境変数からアクセスキーとキーワードパスを読み込む
+    access_key = os.environ.get('PICOVOICE_ACCESS_KEY')
+    keyword_path = os.environ.get('PICOVOICE_KEYWORD_PATH')
+
+    # Porcupineインスタンスの作成
+    porcupine = pvporcupine.create(access_key=access_key, keyword_paths=[keyword_path])
+
+    # Google Cloud Speech-to-Text clientの初期化
+    speech_client = speech.SpeechClient()
+
+    # PyAudioの初期化
+    pa = pyaudio.PyAudio()
+    audio_stream = pa.open(
+        rate=porcupine.sample_rate,
+        channels=1,
+        format=pyaudio.paInt16,
+        input=True,
+        frames_per_buffer=porcupine.frame_length
+    )
+
     genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
     # Google Cloud TTS APIのクライアントを初期化
-    client = texttospeech.TextToSpeechClient()
+    tts_client = texttospeech.TextToSpeechClient()
 
     try:
         video = cv2.VideoCapture(0)
         if not video.isOpened():
             raise IOError("カメラを開くことができませんでした。")
-    except IOError as e:
-        print(f"エラーが発生しました: {e}")
-        return
 
-    # 最近の5フレームのテキストを保持するためのキュー
-    previous_texts = deque(maxlen=5)
+        previous_texts = deque(maxlen=5)
 
-    while True:
-        
-        print("新しいプロンプトを入力するか、Enterキーを押して続行してください (プログラムを終了するには 'exit' と入力）:")
-        user_input = input().strip()  # 入力を受け取る
+        while True:
+            try:
+                pcm = audio_stream.read(porcupine.frame_length, exception_on_overflow=False)
+                pcm = struct.unpack_from("h" * porcupine.frame_length, pcm)
 
-        if not user_input:
-            user_input = "Tell me what you see."
+                keyword_index = porcupine.process(pcm)
+                if keyword_index >= 0:
+                    print("Wake word detected!")
+                    audio_data = record_audio(audio_stream, porcupine.sample_rate, porcupine.frame_length, 5)
+                    user_input = transcribe_audio(speech_client, audio_data)
 
-        success, frame = video.read()
-        if not success:
-            print("フレームの読み込みに失敗しました。")
-            break
+                    success, frame = video.read()
+                    if not success:
+                        print("フレームの読み込みに失敗しました。")
+                        break
 
-        # 現在のタイムスタンプを取得
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    generated_text = send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, genai)
+                    print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
 
-        # geminiにフレームを送信し、生成されたテキストを取得
-        generated_text = send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, genai)
-        print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
+                    previous_texts.append(f"[{timestamp}] Message: {user_input}, Generated Text: {generated_text}")
 
-        # タイムスタンプ付きのテキストをキューに追加
-        # previous_texts.append(f"[{timestamp}] {generated_text}")
-        previous_texts.append(f"[{timestamp}] Message: {user_input}, Generated Text: {generated_text}")
+                    text_to_add = f"{timestamp}: {generated_text}" 
+                    add_text_to_frame(frame, text_to_add)
 
-        # フレームにテキストを追加(日本語は文字化けします)
-        text_to_add = f"{timestamp}: {generated_text}" 
+                    filename = f"{timestamp}.jpg"
+                    save_frame(frame, filename)
 
-        add_text_to_frame(frame, text_to_add)
+                    text_to_speech_google(generated_text, tts_client)
+            except IOError as e:
+                if e.errno == pyaudio.paInputOverflowed:
+                    print("Input overflow, restarting the stream")
+                    audio_stream.stop_stream()
+                    audio_stream.start_stream()
+                else:
+                    raise e
 
-        # フレームを保存
-        filename = f"{timestamp}.jpg"
-        save_frame(frame, filename)
-
-        # text_to_speech(generated_text, client)
-        text_to_speech_google(generated_text, client)
-
-    # ビデオをリリースする
-    video.release()
-    cv2.destroyAllWindows()
+    finally:
+        audio_stream.close()
+        pa.terminate()
+        porcupine.delete()
+        video.release()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
