@@ -4,21 +4,27 @@ import pyaudio
 import struct
 import os
 import cv2
+import time
 from collections import deque
 from datetime import datetime
 from pydub import AudioSegment
 from pydub.playback import play
 import PIL.Image
 import google.generativeai as genai
+from google.generativeai.types.generation_types import BlockedPromptException
 
 
 def record_audio(stream, rate, frame_length, record_seconds):
-    """指定された秒数だけ音声を録音する関数。"""
     print("Recording...")
     frames = []
     for _ in range(0, int(rate / frame_length * record_seconds)):
-        data = stream.read(frame_length)
-        frames.append(data)
+        try:
+            data = stream.read(frame_length, exception_on_overflow=False) 
+            frames.append(data)
+        except IOError as e:
+            if e.errno == pyaudio.paInputOverflowed:
+                # オーバーフロー時の処理
+                continue  # 次のフレームの読み取りに進む
     print("Recording stopped.")
     return b''.join(frames)
 
@@ -28,18 +34,25 @@ def transcribe_audio(client, audio_data):
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
         sample_rate_hertz=16000,
-        language_code="en-US",
+        # language_code="en-US",
+        language_code="ja-JP",
     )
     response = client.recognize(config=config, audio=audio)
-    for result in response.results:
-        print("Transcribed text: {}".format(result.alternatives[0].transcript))
-    return result.alternatives[0].transcript
+    # 結果がある場合のみテキストを返す
+    if response.results:
+        for result in response.results:
+            print("Transcribed text: {}".format(result.alternatives[0].transcript))
+        return response.results[0].alternatives[0].transcript
+    else:
+        print("No transcription results.")
+        return None
 
 def text_to_speech_google(text, client):
     # 音声合成リクエストの設定
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
-        language_code="en-US",  # 日本語を指定
+        # language_code="en-US",  # 日本語を指定
+        language_code="ja-JP",
         ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
     )
     audio_config = texttospeech.AudioConfig(
@@ -120,23 +133,30 @@ def save_temp_frame(frame, filename, directory='./temp'):
     return filepath  # 保存したファイルのパスを返す
 
 def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, client):
-    
     temp_file_path = save_temp_frame(frame, "temp.jpg")
     img = PIL.Image.open(temp_file_path)
 
     # 過去のテキストをコンテキストとして結合
     context = ' '.join(previous_texts)
 
+    # システムメッセージの追加
+    system_message = "System Message: This dialogue is expected to be safe and constructive."
+
     # Geminiモデルの初期化
     model = client.GenerativeModel('gemini-pro-vision')
 
     # モデルに画像とテキストの指示を送信
-    prompt = f"Given the context: {context} and the current time: {timestamp}, please respond to the following message without repeating the context. Message: {user_input}"
-    response = model.generate_content([prompt, img], stream=True)
-    response.resolve()
+    prompt = f"{system_message}\nGiven the context: {context} and the current time: {timestamp}, please respond to the following message without repeating the context in Japanese. Message: {user_input}"
+    
+    try:
+        response = model.generate_content([prompt, img], stream=True)
+        response.resolve()
+        # 生成されたテキストを返す
+        return response.text
+    except BlockedPromptException as e:
+        print("AI response was blocked due to safety concerns. Please try a different input.")
+        return "AI response was blocked due to safety concerns."
 
-    # 生成されたテキストを返す
-    return response.text
 
 def main():
     # 環境変数からアクセスキーとキーワードパスを読み込む
@@ -172,41 +192,75 @@ def main():
 
         while True:
             try:
+                # PyAudioストリームから音声データを読み込む
                 pcm = audio_stream.read(porcupine.frame_length, exception_on_overflow=False)
                 pcm = struct.unpack_from("h" * porcupine.frame_length, pcm)
 
+                # Porcupineを使用してウェイクワードを検出
                 keyword_index = porcupine.process(pcm)
-                if keyword_index >= 0:
+                if keyword_index >= 0:  # ウェイクワードが検出された場合
                     print("Wake word detected!")
-                    audio_data = record_audio(audio_stream, porcupine.sample_rate, porcupine.frame_length, 5)
-                    user_input = transcribe_audio(speech_client, audio_data)
+                    start_time = time.time()  # 現在時刻を記録
 
-                    success, frame = video.read()
-                    if not success:
-                        print("フレームの読み込みに失敗しました。")
-                        break
+                    # ウェイクワード検出後、30秒間続けて処理を行う
+                    while True:  # 無限ループに変更
+                        current_time = time.time()
+                        # 30秒経過したかどうかをチェック
+                        if current_time - start_time >= 30:
+                            break  # 30秒経過したらループを抜ける
 
-                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    generated_text = send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, genai)
-                    print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
+                        # 音声入力の録音とテキストへの変換
+                        audio_data = record_audio(audio_stream, porcupine.sample_rate, porcupine.frame_length, 5)
+                        user_input = transcribe_audio(speech_client, audio_data)
 
-                    previous_texts.append(f"[{timestamp}] Message: {user_input}, Generated Text: {generated_text}")
+                        # 音声入力があった場合の処理
+                        if user_input:  # 音声入力がある場合
+                            start_time = current_time  # タイマーをリセット
 
-                    text_to_add = f"{timestamp}: {generated_text}" 
-                    add_text_to_frame(frame, text_to_add)
+                            # 認識された音声入力
+                            print(f"user input: {user_input}")
 
-                    filename = f"{timestamp}.jpg"
-                    save_frame(frame, filename)
+                            # 画像処理とAI応答のコード
+                            success, frame = video.read()  # カメラからフレームを読み込む
+                            if not success:
+                                print("フレームの読み込みに失敗しました。")
+                                break  # フレームの読み込みに失敗した場合、ループを抜ける
 
-                    text_to_speech_google(generated_text, tts_client)
+                            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # 現在のタイムスタンプを取得
+
+                            # Gemini AIモデルにフレームとユーザーの入力を送信し、応答を生成
+                            generated_text = send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input, genai)
+                            print(f"Timestamp: {timestamp}, Generated Text: {generated_text}")
+
+                            # 過去のテキストを更新
+                            # previous_texts.append(f"[{timestamp}] Message: {user_input}, Generated Text: {generated_text}")
+                            previous_texts.append(f"Timestamp: {timestamp}\nUser Message: {user_input}\nYour Response: {generated_text}\n")
+
+                            # 生成されたテキストをフレームに追加
+                            text_to_add = f"{timestamp}: {generated_text}"
+                            add_text_to_frame(frame, text_to_add)  # フレームにテキストを追加
+
+                            # フレームを保存
+                            filename = f"{timestamp}.jpg"
+                            save_frame(frame, filename)  # 画像として保存
+
+                            # AIの応答を音声に変換して再生
+                            text_to_speech_google(generated_text, tts_client)
+
+                        else:  # 音声入力がない場合
+                            print("No user input, exiting the loop.")
+                            break  # ループを抜ける
+
             except IOError as e:
                 if e.errno == pyaudio.paInputOverflowed:
                     print("Input overflow, restarting the stream")
-                    audio_stream.stop_stream()
-                    audio_stream.start_stream()
+                    if audio_stream.is_active():
+                        audio_stream.stop_stream()
+                    if not audio_stream.is_stopped():
+                        audio_stream.start_stream()
                 else:
                     raise e
-
+                
     finally:
         audio_stream.close()
         pa.terminate()
