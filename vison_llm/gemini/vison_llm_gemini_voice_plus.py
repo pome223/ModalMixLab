@@ -140,7 +140,7 @@ def send_frame_with_text_to_gemini(frame, previous_texts, timestamp, user_input,
     context = ' '.join(previous_texts)
 
     # システムメッセージの追加
-    system_message = "System Message: This dialogue is expected to be safe and constructive."
+    system_message = "System Message - Your identity: Gemini, you are a smart, kind, and helpful AI assistant."
 
     # Geminiモデルの初期化
     model = client.GenerativeModel('gemini-pro-vision')
@@ -216,9 +216,6 @@ def main():
                         # 音声入力があった場合の処理
                         if user_input:  # 音声入力がある場合
                             start_time = current_time  # タイマーをリセット
-
-                            # 認識された音声入力
-                            print(f"user input: {user_input}")
 
                             # 画像処理とAI応答のコード
                             success, frame = video.read()  # カメラからフレームを読み込む
