@@ -13,6 +13,10 @@ import PIL.Image
 import google.generativeai as genai
 from google.generativeai.types.generation_types import BlockedPromptException
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> ba8ed87d897eca4a504dcae2159e1e3eb514be83
 def record_audio(stream, rate, frame_length, record_seconds):
     print("Recording...")
     frames = []
