@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "media_agent"
+version = "0.1.0"
+description = "Example LangGraph project for deployment to LangGraph Cloud"
+authors = [
+    "langchain-ai"
+]
+packages = [
+    { include = "media_agent" },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9.0,<3.13"
+langgraph = "^0.2.4"
+langchain_anthropic = "^0.1.0"
+langchain_core = "^0.2.33"
+langchain_openai = "^0.1.22"
+tavily-python = "^0.3.0"
+langchain_community = "^0.2.12"
+google-generativeai = "^0.7.2"
+langchain = "^0.2.14"
+langsmith = "^0.1.99"
+pydantic = "^2.8.2"
+pydantic_core = "^2.20.1"
+youtube-transcript-api = "^0.6.2"
+spotipy = "*"  # または具体的なバージョン、例: "^2.19.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

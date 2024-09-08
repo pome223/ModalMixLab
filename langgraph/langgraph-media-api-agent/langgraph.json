@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./media_agent/agent.py:graph"
+  },
+  "env": ".env"
+}
