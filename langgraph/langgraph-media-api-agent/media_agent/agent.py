@@ -9,7 +9,6 @@ from media_agent.utils.state import AgentState
 class GraphConfig(TypedDict):
     model_name: Literal["anthropic", "openai"]
 
-
 # Define a new graph
 workflow = StateGraph(AgentState, config_schema=GraphConfig)
 
